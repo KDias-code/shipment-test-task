@@ -1,0 +1,89 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: shipments
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./migrations:/docker-entrypoint-initdb.d
+    networks:
+      - backend
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.102.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./config/otel-collector.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    networks:
+      - backend
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    ports:
+      - "16686:16686" # UI
+      - "14268"
+      - "14250"
+    networks:
+      - backend
+
+  envoy:
+    image: envoyproxy/envoy:v1.31-latest
+    volumes:
+      - ./config/envoy.yaml:/etc/envoy/envoy.yaml
+    ports:
+      - "8080:8080"   # REST доступен тут
+    networks:
+      - backend
+    depends_on:
+      - shipment-service
+      - customer-service
+
+  shipment-service:
+    image: golang:1.25
+    working_dir: /app
+    command: go run ./cmd/shipment-service/main.go
+    volumes:
+      - ./:/app
+    environment:
+      DB: postgres://user:password@postgres:5432/shipments?sslmode=disable
+      SERVER_HOST: customer-service:9090
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    networks:
+      - backend
+    depends_on:
+      - postgres
+      - otel-collector
+      - customer-service
+    ports:
+      - "8081:8080"
+
+  customer-service:
+    image: golang:1.25
+    working_dir: /app
+    command: go run ./cmd/customer-service/main.go
+    volumes:
+      - ./:/app
+    environment:
+      DB: postgres://user:password@postgres:5432/shipments?sslmode=disable
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    expose:
+      - "9090"
+    networks:
+      - backend
+    depends_on:
+      - postgres
+      - otel-collector
+
+networks:
+  backend:
+
+volumes:
+  pgdata:
